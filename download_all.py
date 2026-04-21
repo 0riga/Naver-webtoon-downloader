@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 Парсер и скачивание всех глав тайтла
+Поддержка асинхронного скачивания изображений
 
 Поддерживаемые форматы ссылок:
 - https://comic.naver.com/webtoon/list?titleId=812354
@@ -21,7 +22,8 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException
 import time
 import os
-import requests
+import aiohttp
+import asyncio
 import re
 
 
@@ -194,16 +196,91 @@ def get_chapter_number_from_url(chapter_url):
     return 0
 
 
-def download_chapter_images(chapter_url, output_folder, chapter_title, timeout=30, max_retries=3):
+async def download_image(session, img_url, img_path, max_retries=3):
     """
-    Скачивает изображения из одной главы
+    Асинхронная загрузка одного изображения
+    
+    Args:
+        session: aiohttp.ClientSession
+        img_url: URL изображения
+        img_path: Путь для сохранения
+        max_retries: Макс. количество попыток
+    
+    Returns:
+        bool: True если успешно
+    """
+    for retry in range(max_retries):
+        try:
+            async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                if response.status == 200:
+                    content = await response.read()
+                    with open(img_path, 'wb') as f:
+                        f.write(content)
+                    return True
+                else:
+                    if retry < max_retries - 1:
+                        await asyncio.sleep(1 * (retry + 1))
+                    continue
+        except asyncio.TimeoutError:
+            if retry < max_retries - 1:
+                await asyncio.sleep(2 * (retry + 1))
+            continue
+        except Exception:
+            break
+        
+    return False
+
+
+async def download_all_images(images_data, output_folder, max_concurrent=10):
+    """
+    Асинхронное скачивание всех изображений главы
+    
+    Args:
+        images_data: Список кортежей (img_url, img_path)
+        output_folder: Папка для сохранения
+        max_concurrent: Макс. количество одновременных загрузок
+    
+    Returns:
+        int: Количество успешно загруженных изображений
+    """
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+    
+    # Создаём список задач
+    semaphore = asyncio.Semaphore(max_concurrent)  # Ограничение параллельности
+    
+    async with aiohttp.ClientSession(
+        headers={'User-Agent': 'Mozilla/5.0'},
+        connector=aiohttp.TCPConnector(ssl=False)
+    ) as session:
+        
+        async def download_with_semaphore(img_url, img_path):
+            async with semaphore:
+                success = await download_image(session, img_url, img_path)
+                return img_path, success
+        
+        tasks = [download_with_semaphore(url, path) for url, path in images_data]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    # Подсчитываем успешные загрузки
+    success_count = 0
+    for result in results:
+        if isinstance(result, tuple) and result[1]:
+            success_count += 1
+    
+    return success_count
+
+
+def download_chapter_images(chapter_url, output_folder, chapter_title, max_concurrent=10, max_retries=3):
+    """
+    Скачивает изображения из одной главы (асинхронно)
     
     Args:
         chapter_url: URL главы
         output_folder: Папка для сохранения
         chapter_title: Название главы
-        timeout: таймаут
-        max_retries: макс. количество попыток
+        max_concurrent: Макс. параллельных загрузок
+        max_retries: Макс. попыток на изображение
     
     Returns:
         dict: {'success': bool, 'count': int}
@@ -231,49 +308,21 @@ def download_chapter_images(chapter_url, output_folder, chapter_title, timeout=3
             print(f"[WARN] Нет изображений в главе")
             return {'success': False, 'count': 0}
         
-        downloaded_count = 0
-        
+        # Собираем данные для загрузки
+        images_data = []
         for i, img in enumerate(images):
-            try:
-                img_url = img.get_attribute('src')
-                if not img_url:
-                    continue
-                
+            img_url = img.get_attribute('src')
+            if img_url:
                 img_filename = f'image_{i+1:04d}.jpg'
                 img_path = os.path.join(chapter_folder, img_filename)
-                
-                # Пробуем скачать с повторами
-                success = False
-                for retry in range(max_retries):
-                    try:
-                        headers = {'User-Agent': 'Mozilla/5.0'}
-                        response = requests.get(img_url, headers=headers, timeout=timeout)
-                        
-                        if response.status_code == 200:
-                            with open(img_path, 'wb') as f:
-                                f.write(response.content)
-                            downloaded_count += 1
-                            success = True
-                            break
-                        else:
-                            time.sleep(1 * (retry + 1))  # Задержка перед повтором
-                    except requests.exceptions.Timeout:
-                        if retry < max_retries - 1:
-                            print(f"  [RETRY] {i+1}/{len(images)} - попытка {retry+2}")
-                            time.sleep(2 * (retry + 1))
-                        continue
-                    except Exception:
-                        break
-                
-                if not success:
-                    print(f"  [FAIL] {i+1}/{len(images)}")
-                
-                time.sleep(0.05)  # Минимальная задержка между изображениями
-                
-            except Exception as e:
-                continue
+                images_data.append((img_url, img_path))
         
-        print(f"[OK] {chapter_title[:40]}... - {downloaded_count}/{len(images)} изображений")
+        print(f"[INFO] Загрузка {len(images_data)} изображений...")
+        
+        # Асинхронная загрузка
+        downloaded_count = asyncio.run(download_all_images(images_data, chapter_folder, max_concurrent))
+        
+        print(f"[OK] {chapter_title[:40]}... - {downloaded_count}/{len(images_data)} изображений")
         
         return {'success': downloaded_count > 0, 'count': downloaded_count}
         

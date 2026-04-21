@@ -101,7 +101,7 @@ pip install -r requirements.txt
 
 Дождитесь окончания установки. Должно появиться:
 ```
-Successfully installed selenium-... requests-... beautifulsoup4-...
+Successfully installed selenium-... aiohttp-... beautifulsoup4-...
 ```
 
 ### Шаг 4: Установите ChromeDriver
@@ -345,5 +345,16 @@ pip install webdriver-manager
 ```cmd
 python download_all.py -u "https://comic.naver.com/webtoon/list?titleId=812354" -s 79 -1
 ```
+
+---
+
+## ⚡ Особенности
+
+| Особенность | Описание |
+|-------------|----------|
+| **Асинхронное скачивание** | До 10 изображений загружаются одновременно |
+| **Авто-повтор** | Неудачные загрузки повторяются автоматически |
+| **Минимальные задержки** | 0.1 сек между главами для скорости |
+| **Headless режим** | Браузер не открывается визуально |
 
 Удачи! 🚀
